@@ -1,5 +1,7 @@
 import gradio as gr
 from openai import OpenAI
+import requests
+import json
 import re
 # Connect to local vLLM server
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="any_key")
@@ -89,6 +91,18 @@ latex_css = """
 </style>
 """
 
+reform_chat_template = """<|im_start|>system
+Give me a well formatted task description that matches the user's code snippet.<|im_end|>
+<|im_start|>user
+{prompt}<|im_end|>
+<|im_start|>assistant"""
+
+coding_chat_template = """<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+{improved_prompt}<|im_end|>
+<|im_start|>assistant"""
+
 def enhance_latex_rendering(text):
     """
     Enhance LaTeX rendering by ensuring proper formatting and escaping
@@ -103,95 +117,68 @@ def enhance_latex_rendering(text):
     return text
 
 def chat_stream(message, history):
-    # Convert Gradio history format to OpenAI format
-    messages = []
-    
-    # Add conversation history
-    for m in history:
-        messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": message})
-
-    stream = client.chat.completions.create(
-        model="andynoodles/LLCG-OCI",
-        messages=messages,
-        stream=True,
+    # First stage Prompt reformulation
+    reform_prompt = reform_chat_template.format(prompt=message)
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json={"model": "Question_reformer_qwen:latest", "prompt": reform_prompt},
+        stream=True
     )
     
     partial_content = ""
-    for chunk in stream:
-        delta_content = chunk.choices[0].delta.content
-        if delta_content is not None:
-            partial_content += delta_content
-            # Enhance LaTeX rendering for streaming content
-            enhanced_content = enhance_latex_rendering(partial_content)
-            yield enhanced_content
+    partial_content += "# Now reforming prompt\n\n"
+    yield partial_content
+    for line in response.iter_lines():
+        if line:
+            data = json.loads(line.decode("utf-8"))
+            if "response" in data:
+                partial_content += data["response"]
+                #enhanced_content = enhance_latex_rendering(partial_content)
+                yield partial_content
+    # Second stage Code generation based on improved prompt
+    partial_content += "\n\n# Now generating code based on improved prompt\n\n"
+    yield partial_content
+    improved_prompt = partial_content.strip()
+    coding_prompt = coding_chat_template.format(
+        improved_prompt=improved_prompt,
+        original_prompt=message)
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json={"model": "Coding_qwen:latest", "prompt": coding_prompt},
+        stream=True
+    )
+    for line in response.iter_lines():
+        if line:
+            data = json.loads(line.decode("utf-8"))
+            if "response" in data:
+                partial_content += data["response"]
+                #enhanced_content = enhance_latex_rendering(partial_content)
+                yield partial_content
+
+    
 
 # Sample questions for suggestions
 SAMPLE_QUESTIONS = [
-    """**Problem Statement:**
-You are given a list of floating-point numbers `numbers` and a threshold value `threshold`. Your task is to implement a function `has_close_elements` that checks if there are any two numbers in the list that are closer to each other than the given threshold.
+    """from typing import List
 
-**Input:**
-- A list of floating-point numbers, `numbers`.
-- A threshold value, `threshold`.
+def has_close_elements(numbers: List[float], threshold: float) -> bool:
+\"\"\" Check if in given list of numbers, are any two numbers closer to each other than
+given threshold.
+>>> has_close_elements([1.0, 2.0, 3.0], 0.5)
+False
+>>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)
+True
+\"\"\"""",
+"""from typing import List
 
-**Output:**
-- A boolean indicating whether any two numbers in the list are closer than the threshold.
-
-**Sample Input:**
-- `numbers = [1.0, 2.0, 3.0]`
-- `threshold = 0.5`
-
-**Sample Output:**
-- `False`
-
-**Sample Input 2:**
-- `numbers = [1.0, 2.8, 3.0, 4.0, 5.0, 2.0]`
-- `threshold = 0.3`
-
-**Sample Output 2:**
-- `True`""",
-    """## Problem Statement
-You are given a string `paren_string` containing multiple groups of nested parentheses. Your task is to implement a function `separate_paren_groups` that separates these groups into separate strings and returns a list of those.
-
-### Key Constraints
-- The input string contains multiple groups of nested parentheses.
-- The groups are balanced (each open brace is properly closed) and not nested within each other.
-- Any spaces in the input string should be ignored.
-
-### Input
-- A string `paren_string` containing multiple groups of nested parentheses.
-
-### Output
-- A list of strings, where each string represents a separate group of nested parentheses.
-
-### Sample Input
-```
-'( ) (( )) (( )( ))'
-```
-
-### Sample Output
-```python
+def separate_paren_groups(paren_string: str) -> List[str]:
+\"\"\" Input to this function is a string containing multiple groups of nested parentheses. Your goal is to
+separate those group into separate strings and return the list of those.
+Separate groups are balanced (each open brace is properly closed) and not nested within each other
+Ignore any spaces in the input string.
+>>> separate_paren_groups('( ) (( )) (( )( ))')
 ['()', '(())', '(()())']
-```
-""",
-    """## Problem Statement
-You are given a string `string` and a substring `substring`. Your task is to implement a function `how_many_times` that returns the number of times `substring` appears in `string`, including overlapping cases.
-
-## Input
-- A string `string` to search in.
-- A substring `substring` to search for.
-
-## Output
-- The number of times `substring` appears in `string`, including overlapping cases.
-
-## Sample Input/Output
-- `how_many_times('', 'a')` → `0`
-- `how_many_times('aaa', 'a')` → `3`
-- `how_many_times('aaaa', 'aa')` → `3`
-
-## Task
-Implement the `how_many_times` function according to the given specifications.""",
+\"\"\"""",
 ]
 
 def add_sample_question(new_question):
@@ -272,3 +259,4 @@ with gr.Blocks(css=latex_css, title="LLCG agent", theme=gr.themes.Soft(), fill_h
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, max_threads=4, share=True)
+
