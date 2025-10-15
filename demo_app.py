@@ -179,6 +179,15 @@ Ignore any spaces in the input string.
 >>> separate_paren_groups('( ) (( )) (( )( ))')
 ['()', '(())', '(()())']
 \"\"\"""",
+"""def truncate_number(number: float) -> float:
+\"\"\" Given a positive floating point number, it can be decomposed into
+and integer part (largest integer smaller than given number) and decimals
+(leftover part always smaller than 1).
+
+Return the decimal part of the number.
+>>> truncate_number(3.5)
+0.5
+\"\"\""""
 ]
 
 def add_sample_question(new_question):
@@ -259,4 +268,3 @@ with gr.Blocks(css=latex_css, title="LLCG agent", theme=gr.themes.Soft(), fill_h
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, max_threads=4, share=True)
-
